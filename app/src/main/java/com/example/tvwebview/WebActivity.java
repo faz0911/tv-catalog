@@ -75,7 +75,7 @@ public class WebActivity extends Activity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         cursorMode = prefs.getBoolean(KEY_CURSOR, true);
         textZoom = prefs.getInt(KEY_ZOOM, 100);
-        uaMode = prefs.getInt(KEY_UA, 0);
+        uaMode = prefs.getInt(KEY_UA, 2);   // default: Mobile site
         clickMode = prefs.getInt(KEY_CLICK, 0);
         density = getResources().getDisplayMetrics().density;
 
@@ -455,12 +455,31 @@ public class WebActivity extends Activity {
                 showMenu();
                 return true;
             case KeyEvent.KEYCODE_BACK:
-                if (customView != null) hideCustomView();
-                else if (webView.canGoBack()) webView.goBack();
-                else finish();
+                event.startTracking();   // wait to see if it's a long press
                 return true;
         }
         return super.onKeyDown(keyCode, event);
+    }
+
+    /** Hold BACK to open the menu (for remotes without a MENU key). */
+    @Override
+    public boolean onKeyLongPress(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            showMenu();
+            return true;
+        }
+        return super.onKeyLongPress(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK && event.isTracking() && !event.isCanceled()) {
+            if (customView != null) hideCustomView();
+            else if (webView.canGoBack()) webView.goBack();
+            else finish();
+            return true;
+        }
+        return super.onKeyUp(keyCode, event);
     }
 
     @Override
