@@ -32,7 +32,17 @@ public class CatalogActivity extends Activity {
     private static final String PREFS = "settings";
     private static final String KEY_FEED = "feed_url";
     private static final int COLUMNS = 3;   // change here for a different grid width
-    private static final String DEFAULT_FEED = "https://raw.githubusercontent.com/faz0911/tv-catalog/main/sample-feed.json";
+
+    // >>> PUT YOUR FEED URL HERE (must return JSON). If not empty, it ALWAYS overrides
+    // anything saved in the app. Leave "" to use the URL set from the Menu instead.
+    private static final String HARDCODED_FEED =
+            "https://raw.githubusercontent.com/faz0911/tv-catalog/main/sample-feed.json";
+
+    private String currentFeed() {
+        if (!HARDCODED_FEED.isEmpty()) return HARDCODED_FEED;
+        return prefs.getString(KEY_FEED, "");
+    }
+
     private interface UrlCallback { void onUrl(String url); }
 
     private final List<Item> items = new ArrayList<>();
@@ -85,7 +95,7 @@ public class CatalogActivity extends Activity {
     }
 
     private void refresh() {
-        final String feedUrl = prefs.getString(KEY_FEED, "");
+        final String feedUrl = currentFeed();
         if (feedUrl.isEmpty()) {
             headerTitle.setText("Catalog");
             showPlaceholders("No feed set. Open Menu > Set feed URL.");
@@ -160,7 +170,7 @@ public class CatalogActivity extends Activity {
                 .setItems(labels, (d, which) -> {
                     switch (which) {
                         case 0:
-                            askUrl("Feed URL (JSON)", prefs.getString(KEY_FEED, ""), url -> {
+                            askUrl("Feed URL (JSON)", currentFeed(), url -> {
                                 prefs.edit().putString(KEY_FEED, url).apply();
                                 refresh();
                             });
