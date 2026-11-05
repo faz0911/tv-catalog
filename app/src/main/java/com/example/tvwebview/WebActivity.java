@@ -5,7 +5,9 @@ import android.app.AlertDialog;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.os.Bundle;
+import android.os.Message;
 import android.os.SystemClock;
+import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -55,6 +57,7 @@ public class WebActivity extends Activity {
     private int textZoom;
     private boolean desktop;
     private float cx, cy, density;
+    private long lastUserAction;   // time of last OK/click, used to allow popups the user asked for
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -102,8 +105,8 @@ public class WebActivity extends Activity {
         s.setLoadWithOverviewMode(true);
         s.setUseWideViewPort(true);
         s.setBuiltInZoomControls(false);
-        s.setSupportMultipleWindows(false);
-        s.setJavaScriptCanOpenWindowsAutomatically(false);
+        s.setSupportMultipleWindows(true);              // popups reach onCreateWindow
+        s.setJavaScriptCanOpenWindowsAutomatically(true);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
 
         CookieManager.getInstance().setAcceptCookie(true);
@@ -113,7 +116,18 @@ public class WebActivity extends Activity {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 String scheme = request.getUrl().getScheme();
-                return !("http".equals(scheme) || "https".equals(scheme));
+                if (scheme == null) return false;
+                switch (scheme) {
+                    case "http":
+                    case "https":
+                    case "javascript":
+                    case "about":
+                    case "blob":
+                    case "data":
+                        return false;   // let the page handle it, inside this view
+                    default:
+                        return true;    // block intent:, market:, etc.
+                }
             }
 
             @Override
@@ -131,6 +145,46 @@ public class WebActivity extends Activity {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
                 progress.setProgress(newProgress);
+            }
+
+            @Override
+            public boolean onCreateWindow(WebView view, boolean isDialog,
+                                          boolean isUserGesture, Message resultMsg) {
+                // Only honor popups the user triggered (OK press / click). Others are blocked.
+                boolean recent = SystemClock.uptimeMillis() - lastUserAction < 3000;
+                if (!isUserGesture && !recent) {
+                    Toast.makeText(WebActivity.this, "Blocked popup", Toast.LENGTH_SHORT).show();
+                    return false;
+                }
+                final WebView temp = new WebView(WebActivity.this);
+                temp.getSettings().setJavaScriptEnabled(true);
+                temp.getSettings().setDomStorageEnabled(true);
+                temp.setWebViewClient(new WebViewClient() {
+                    private boolean done;
+
+                    private void adopt(String url) {
+                        if (done || url == null || url.isEmpty() || url.startsWith("about:")) return;
+                        done = true;
+                        webView.loadUrl(url);          // open popup in the same view
+                        temp.stopLoading();
+                        webView.post(temp::destroy);
+                    }
+
+                    @Override
+                    public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
+                        adopt(r.getUrl().toString());
+                        return true;
+                    }
+
+                    @Override
+                    public void onPageStarted(WebView v, String url, Bitmap favicon) {
+                        adopt(url);
+                    }
+                });
+                WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
+                transport.setWebView(temp);
+                resultMsg.sendToTarget();
+                return true;
             }
 
             @Override
@@ -183,6 +237,12 @@ public class WebActivity extends Activity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent e) {
+        int kc = e.getKeyCode();
+        if (e.getAction() == KeyEvent.ACTION_DOWN
+                && (kc == KeyEvent.KEYCODE_DPAD_CENTER || kc == KeyEvent.KEYCODE_ENTER
+                || kc == KeyEvent.KEYCODE_NUMPAD_ENTER)) {
+            lastUserAction = SystemClock.uptimeMillis();
+        }
         if (cursorMode && customView == null && !menuShowing() && handleCursorKey(e)) {
             return true;
         }
@@ -231,13 +291,22 @@ public class WebActivity extends Activity {
 
     private void click() {
         webView.requestFocus();
-        long t = SystemClock.uptimeMillis();
-        MotionEvent down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, cx, cy, 0);
-        webView.dispatchTouchEvent(down);
-        down.recycle();
-        MotionEvent up = MotionEvent.obtain(t, t + 60, MotionEvent.ACTION_UP, cx, cy, 0);
-        webView.dispatchTouchEvent(up);
-        up.recycle();
+        final long down = SystemClock.uptimeMillis();
+        lastUserAction = down;
+        sendTouch(MotionEvent.ACTION_DOWN, down, down);
+        webView.postDelayed(() -> {
+            long now = SystemClock.uptimeMillis();
+            lastUserAction = now;
+            sendTouch(MotionEvent.ACTION_UP, down, now);
+        }, 80);
+    }
+
+    private void sendTouch(int action, long downTime, long eventTime) {
+        MotionEvent ev = MotionEvent.obtain(downTime, eventTime, action,
+                cx, cy, 1f, 1f, 0, 1f, 1f, 0, 0);
+        ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        webView.dispatchTouchEvent(ev);
+        ev.recycle();
     }
 
     // ---------- Menu ----------
