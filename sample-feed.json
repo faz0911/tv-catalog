@@ -7,13 +7,6 @@
       "tag": "youtube",
       "image": "https://www.gstatic.com/marketing-cms/assets/images/08/25/fffdc76145f28be3a1ca63859c4a/external-logo-core-1.png=n-w1860-h1047-fcrop64=1,00000000ffffffff-rw",
       "url": "https://www.youtube.com/"
-    },
-    {
-      "title": "Sample Video Two",
-      "subtitle": "01/22/2026",
-      "tag": "Demo",
-      "image": "https://example.com/thumbs/two.jpg",
-      "url": "https://example.com/videos/two"
     }
   ]
 }
