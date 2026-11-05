@@ -32,7 +32,7 @@ public class CatalogActivity extends Activity {
     private static final String PREFS = "settings";
     private static final String KEY_FEED = "feed_url";
     private static final int COLUMNS = 3;   // change here for a different grid width
-
+    private static final String DEFAULT_FEED = "https://raw.githubusercontent.com/faz0911/tv-catalog/main/sample-feed.json";
     private interface UrlCallback { void onUrl(String url); }
 
     private final List<Item> items = new ArrayList<>();
