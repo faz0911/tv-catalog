@@ -26,10 +26,10 @@ import android.widget.Toast;
 /**
  * In-app browser for TV.
  * - Pages render exactly as the server delivers them (real Chromium WebView).
- * - All http/https links (incl. target=_blank / window.open) stay in this view.
+ * - Links and popups (target=_blank / window.open) open inside this same view.
  * - Cursor mode: D-pad moves an on-screen pointer, OK clicks, pushing against a
- *   screen edge scrolls. Turn it off in the menu to use native focus navigation.
- * - Menu: text size, desktop/mobile site, reload.
+ *   screen edge scrolls.
+ * - Menu: text size, site mode (default/desktop/mobile), click type (touch/mouse).
  */
 public class WebActivity extends Activity {
 
@@ -38,11 +38,17 @@ public class WebActivity extends Activity {
     private static final String PREFS = "settings";
     private static final String KEY_CURSOR = "cursor_mode";
     private static final String KEY_ZOOM = "text_zoom";
-    private static final String KEY_DESKTOP = "desktop_site";
+    private static final String KEY_UA = "ua_mode";        // 0 default, 1 desktop, 2 mobile
+    private static final String KEY_CLICK = "click_mode";  // 0 touch, 1 mouse
     private static final int[] ZOOMS = {100, 125, 150, 175, 200};
+    private static final String[] UA_NAMES = {"Default", "Desktop", "Mobile"};
+    private static final String[] CLICK_NAMES = {"Touch", "Mouse", "Script"};
     private static final String DESKTOP_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
                     + "Chrome/124.0.0.0 Safari/537.36";
+    private static final String MOBILE_UA =
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                    + "Chrome/124.0.0.0 Mobile Safari/537.36";
 
     private WebView webView;
     private ProgressBar progress;
@@ -55,9 +61,10 @@ public class WebActivity extends Activity {
 
     private boolean cursorMode;
     private int textZoom;
-    private boolean desktop;
+    private int uaMode;
+    private int clickMode;
     private float cx, cy, density;
-    private long lastUserAction;   // time of last OK/click, used to allow popups the user asked for
+    private long lastUserAction;   // time of last OK/click; popups right after it are allowed
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -68,7 +75,8 @@ public class WebActivity extends Activity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         cursorMode = prefs.getBoolean(KEY_CURSOR, true);
         textZoom = prefs.getInt(KEY_ZOOM, 100);
-        desktop = prefs.getBoolean(KEY_DESKTOP, false);
+        uaMode = prefs.getInt(KEY_UA, 0);
+        clickMode = prefs.getInt(KEY_CLICK, 0);
         density = getResources().getDisplayMetrics().density;
 
         root = findViewById(R.id.root);
@@ -124,7 +132,7 @@ public class WebActivity extends Activity {
                     case "about":
                     case "blob":
                     case "data":
-                        return false;   // let the page handle it, inside this view
+                        return false;   // handled inside this view
                     default:
                         return true;    // block intent:, market:, etc.
                 }
@@ -150,10 +158,10 @@ public class WebActivity extends Activity {
             @Override
             public boolean onCreateWindow(WebView view, boolean isDialog,
                                           boolean isUserGesture, Message resultMsg) {
-                // Only honor popups the user triggered (OK press / click). Others are blocked.
                 boolean recent = SystemClock.uptimeMillis() - lastUserAction < 3000;
                 if (!isUserGesture && !recent) {
-                    Toast.makeText(WebActivity.this, "Blocked popup", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(WebActivity.this, "Blocked automatic popup",
+                            Toast.LENGTH_SHORT).show();
                     return false;
                 }
                 final WebView temp = new WebView(WebActivity.this);
@@ -165,6 +173,7 @@ public class WebActivity extends Activity {
                     private void adopt(String url) {
                         if (done || url == null || url.isEmpty() || url.startsWith("about:")) return;
                         done = true;
+                        Toast.makeText(WebActivity.this, "Popup opened here", Toast.LENGTH_SHORT).show();
                         webView.loadUrl(url);          // open popup in the same view
                         temp.stopLoading();
                         webView.post(temp::destroy);
@@ -211,7 +220,10 @@ public class WebActivity extends Activity {
     private void applySettings() {
         WebSettings s = webView.getSettings();
         s.setTextZoom(textZoom);
-        s.setUserAgentString(desktop ? DESKTOP_UA : null); // null = default UA
+        String ua = null; // null = WebView default
+        if (uaMode == 1) ua = DESKTOP_UA;
+        else if (uaMode == 2) ua = MOBILE_UA;
+        s.setUserAgentString(ua);
     }
 
     private void updateCursorVisibility() {
@@ -287,25 +299,95 @@ public class WebActivity extends Activity {
         cx = Math.max(0, Math.min(w - 1, cx + dx));
         cy = Math.max(0, Math.min(h - 1, cy + dy));
         cursor.setPos(cx, cy);
+        if (clickMode == 1) sendHover();
     }
 
     private void click() {
         webView.requestFocus();
+        lastUserAction = SystemClock.uptimeMillis();
+        if (clickMode == 2) {
+            scriptClick();
+        } else {
+            tapAtCursor();
+        }
+    }
+
+    /** Real pointer events (touch for clickMode 0, mouse for clickMode 1). */
+    private void tapAtCursor() {
         final long down = SystemClock.uptimeMillis();
         lastUserAction = down;
-        sendTouch(MotionEvent.ACTION_DOWN, down, down);
+        if (clickMode == 1) sendHover();
+        sendPointer(MotionEvent.ACTION_DOWN, down, down);
         webView.postDelayed(() -> {
             long now = SystemClock.uptimeMillis();
             lastUserAction = now;
-            sendTouch(MotionEvent.ACTION_UP, down, now);
+            sendPointer(MotionEvent.ACTION_UP, down, now);
         }, 80);
     }
 
-    private void sendTouch(int action, long downTime, long eventTime) {
-        MotionEvent ev = MotionEvent.obtain(downTime, eventTime, action,
-                cx, cy, 1f, 1f, 0, 1f, 1f, 0, 0);
-        ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+    /**
+     * Clicks the page element under the cursor from inside the page (works for in-page
+     * overlays/modals). Falls back to a real tap for iframes, which scripts can't reach.
+     * Shows a short message naming the element that was hit.
+     */
+    @SuppressWarnings("deprecation")
+    private void scriptClick() {
+        float sc = webView.getScale();
+        final float scale = sc <= 0 ? 1f : sc;
+        final String js =
+                "(function(x,y){var vv=window.visualViewport;"
+                + "var px=x+(vv?vv.offsetLeft:0),py=y+(vv?vv.offsetTop:0);"
+                + "var el=document.elementFromPoint(px,py);if(!el)return 'none';"
+                + "if(el.tagName==='IFRAME')return 'IFRAME';"
+                + "function f(t,C,b){try{el.dispatchEvent(new C(t,{bubbles:true,cancelable:true,"
+                + "view:window,clientX:px,clientY:py,button:0,buttons:b}));}catch(e){}}"
+                + "f('pointerdown',window.PointerEvent||MouseEvent,1);f('mousedown',MouseEvent,1);"
+                + "try{el.focus();}catch(e){}"
+                + "f('pointerup',window.PointerEvent||MouseEvent,0);f('mouseup',MouseEvent,0);"
+                + "f('click',MouseEvent,0);"
+                + "return el.tagName+(typeof el.className==='string'&&el.className"
+                + "?'.'+el.className.split(' ')[0]:'');"
+                + "})(" + (cx / scale) + "," + (cy / scale) + ")";
+        webView.evaluateJavascript(js, value -> {
+            if (value != null && value.contains("IFRAME")) {
+                tapAtCursor();   // scripts can't click inside iframes; use a real tap
+            } else {
+                Toast.makeText(WebActivity.this, "Clicked: " + value, Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    /** Sends a touch tap (clickMode 0) or a primary mouse button press/release (clickMode 1). */
+    private void sendPointer(int action, long downTime, long eventTime) {
+        MotionEvent ev;
+        if (clickMode == 1) {
+            MotionEvent.PointerProperties pp = new MotionEvent.PointerProperties();
+            pp.id = 0;
+            pp.toolType = MotionEvent.TOOL_TYPE_MOUSE;
+            MotionEvent.PointerCoords pc = new MotionEvent.PointerCoords();
+            pc.x = cx;
+            pc.y = cy;
+            pc.pressure = 1f;
+            pc.size = 1f;
+            int buttons = action == MotionEvent.ACTION_UP ? 0 : MotionEvent.BUTTON_PRIMARY;
+            ev = MotionEvent.obtain(downTime, eventTime, action, 1,
+                    new MotionEvent.PointerProperties[]{pp},
+                    new MotionEvent.PointerCoords[]{pc},
+                    0, buttons, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0);
+        } else {
+            ev = MotionEvent.obtain(downTime, eventTime, action,
+                    cx, cy, 1f, 1f, 0, 1f, 1f, 0, 0);
+            ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        }
         webView.dispatchTouchEvent(ev);
+        ev.recycle();
+    }
+
+    private void sendHover() {
+        long t = SystemClock.uptimeMillis();
+        MotionEvent ev = MotionEvent.obtain(t, t, MotionEvent.ACTION_HOVER_MOVE, cx, cy, 0);
+        ev.setSource(InputDevice.SOURCE_MOUSE);
+        webView.dispatchGenericMotionEvent(ev);
         ev.recycle();
     }
 
@@ -317,7 +399,8 @@ public class WebActivity extends Activity {
                 "Reload",
                 "Cursor mode: " + (cursorMode ? "ON" : "OFF"),
                 "Text size: " + textZoom + "%",
-                "Desktop site: " + (desktop ? "ON" : "OFF"),
+                "Site mode: " + UA_NAMES[uaMode],
+                "Click type: " + CLICK_NAMES[clickMode],
                 "Back to catalog"
         };
         menuDialog = new AlertDialog.Builder(this)
@@ -341,12 +424,20 @@ public class WebActivity extends Activity {
                             Toast.makeText(this, "Text size " + textZoom + "%", Toast.LENGTH_SHORT).show();
                             break;
                         case 3:
-                            desktop = !desktop;
-                            prefs.edit().putBoolean(KEY_DESKTOP, desktop).apply();
+                            uaMode = (uaMode + 1) % UA_NAMES.length;
+                            prefs.edit().putInt(KEY_UA, uaMode).apply();
                             applySettings();
+                            Toast.makeText(this, "Site mode: " + UA_NAMES[uaMode] + " (reloading)",
+                                    Toast.LENGTH_SHORT).show();
                             webView.reload();
                             break;
                         case 4:
+                            clickMode = (clickMode + 1) % CLICK_NAMES.length;
+                            prefs.edit().putInt(KEY_CLICK, clickMode).apply();
+                            Toast.makeText(this, "Click type: " + CLICK_NAMES[clickMode],
+                                    Toast.LENGTH_SHORT).show();
+                            break;
+                        case 5:
                             finish();
                             break;
                     }
